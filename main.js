@@ -3,6 +3,7 @@ const path = require('path');
 const Store = require('electron-store');
 const { SerialPort } = require('serialport');
 const fs = require('fs');
+const { StringDecoder } = require('string_decoder');
 
 function logError(errorMsg) {
   try {
@@ -99,11 +100,16 @@ function connectSerialPort(config) {
 
     let buffer = '';
     let scanTimeout = null;
+    let decoder = new StringDecoder(config.encoding === 'ascii' ? 'ascii' : 'utf8');
 
     function processBuffer() {
       if (!buffer) return;
+      const remaining = decoder.end();
+      if (remaining) buffer += remaining;
+
       const completeData = buffer.trim();
       buffer = ''; // Reset buffer sau khi xử lý
+      decoder = new StringDecoder(config.encoding === 'ascii' ? 'ascii' : 'utf8'); // Khởi tạo lại decoder cho lần quét tiếp theo
 
       if (completeData) {
         const formatted = parseCCCDData(completeData);
@@ -129,8 +135,8 @@ function connectSerialPort(config) {
     }
 
     serialPort.on('data', (data) => {
-      // Decode theo cấu hình
-      const text = data.toString(config.encoding === 'ascii' ? 'ascii' : 'utf8');
+      // Sử dụng StringDecoder để giải mã chính xác các ký tự UTF-8 nhiều byte bị cắt ngang giữa các chunk
+      const text = decoder.write(data);
       buffer += text;
       
       // Xóa timer cũ nếu dữ liệu đang tiếp tục đến
