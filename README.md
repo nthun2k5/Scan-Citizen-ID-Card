@@ -1,4 +1,4 @@
-# Tài liệu Yêu cầu Phần mềm Quét CCCD qua Cổng COM
+# Tài liệu Phần mềm Quét CCCD qua Cổng COM
 
 **Tên phần mềm:** CCCD Scanner  
 **Phiên bản:** 1.0  
