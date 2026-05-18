@@ -109,13 +109,15 @@ function connectSerialPort(config) {
         const formatted = parseCCCDData(completeData);
         clipboard.writeText(formatted);
         
-        // Tự động gõ phím dán (Ctrl + V) vào Notepad / ứng dụng đang focus
+        // Tự động gõ phím dán (Ctrl + V) vào Notepad / ứng dụng đang focus kèm phím Enter siêu tốc
         try {
           const robot = require('robotjs');
-          // Delay nhỏ 100ms để hệ điều hành nhận diện xong clipboard trước khi gửi phím
+          // Giảm delay xuống 20ms (đủ nhanh để hệ điều hành nhận diện clipboard mà không bị trễ)
           setTimeout(() => {
             robot.keyTap('v', ['control']);
-          }, 100);
+            // Giảm delay Enter xuống 20ms (tốc độ gõ tức thì)
+            setTimeout(() => { robot.keyTap('enter'); }, 20);
+          }, 20);
         } catch (e) {
           logError('Robotjs error: ' + e.message);
         }
@@ -138,8 +140,8 @@ function connectSerialPort(config) {
       if (buffer.includes('\n') || buffer.includes('\r')) {
         processBuffer();
       } else {
-        // Nếu sau 200ms không nhận thêm ký tự nào (máy quét đã gửi xong nhưng không có \n), tự động xử lý
-        scanTimeout = setTimeout(processBuffer, 200);
+        // Giảm thời gian chờ ngắt gói dữ liệu từ 200ms xuống 40ms (tăng tốc độ phản hồi lên gấp 5 lần)
+        scanTimeout = setTimeout(processBuffer, 40);
       }
     });
 
