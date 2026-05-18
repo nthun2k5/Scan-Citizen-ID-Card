@@ -115,15 +115,15 @@ function connectSerialPort(config) {
         const formatted = parseCCCDData(completeData);
         clipboard.writeText(formatted);
         
-        // Tự động gõ phím dán (Ctrl + V) vào Notepad / ứng dụng đang focus kèm phím Enter siêu tốc
+        // Tự động gõ phím dán (Ctrl + V) vào ứng dụng đang focus kèm phím Enter
         try {
           const robot = require('robotjs');
-          // Giảm delay xuống 20ms (đủ nhanh để hệ điều hành nhận diện clipboard mà không bị trễ)
+          // Tăng delay sau khi ghi clipboard lên 150ms để Windows và các phần mềm nặng kịp đồng bộ dữ liệu trong bộ nhớ
           setTimeout(() => {
             robot.keyTap('v', ['control']);
-            // Giảm delay Enter xuống 20ms (tốc độ gõ tức thì)
-            setTimeout(() => { robot.keyTap('enter'); }, 20);
-          }, 20);
+            // Tăng delay trước khi gõ Enter lên 250ms để phần mềm đích có đủ thời gian xử lý và hiển thị trọn vẹn chuỗi Unicode tiếng Việt
+            setTimeout(() => { robot.keyTap('enter'); }, 250);
+          }, 150);
         } catch (e) {
           logError('Robotjs error: ' + e.message);
         }
