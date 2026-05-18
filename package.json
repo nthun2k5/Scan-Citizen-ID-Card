@@ -9,7 +9,7 @@
   },
   "build": {
     "appId": "com.cccdscanner.app",
-    "productName": "CCCD Scanner",
+    "productName": "Scan Citizen ID Card",
     "win": {
       "target": "nsis",
       "icon": "assets/icon.png"
@@ -19,7 +19,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "CCCD Scanner"
+      "shortcutName": "Scan Citizen ID Card"
     }
   },
   "dependencies": {
