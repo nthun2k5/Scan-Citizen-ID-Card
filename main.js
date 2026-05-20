@@ -1,18 +1,69 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, clipboard } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, clipboard, dialog } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 const { SerialPort } = require('serialport');
 const fs = require('fs');
 const { StringDecoder } = require('string_decoder');
 
+// Global variables
+let mainWindow;
+let tray = null;
+let serialPort = null;
+let reconnectTimer = null;
+let currentStatus = { connected: false, message: 'Đang khởi động...' };
+let robot = null;
+
+// Logger
 function logError(errorMsg) {
   try {
     const logPath = path.join(app.getPath('userData'), 'error.log');
     const time = new Date().toISOString();
-    fs.appendFileSync(logPath, `[${time}] ERROR: ${errorMsg}\n`);
+    fs.appendFileSync(logPath, `[${time}] ${errorMsg}\n`);
+    console.error(errorMsg);
   } catch (e) {
     console.error('Cannot write log:', e);
   }
+}
+
+// Load robotjs at top level
+try {
+  robot = require('robotjs');
+} catch (e) {
+  logError('Robotjs load error: ' + e.message + '. Tính năng tự động dán sẽ không hoạt động.');
+}
+
+// Check for admin privileges (Windows specific)
+function isElevated() {
+  try {
+    // Attempt to write to a protected directory or check process environment
+    // On Windows, checking if we can write to System32 or using a shell command is common.
+    // A simpler way in Electron on Windows is to check if we are running with admin rights.
+    // For now, we'll use a simple flag that can be checked later.
+    return process.platform === 'win32' && require('child_process').spawnSync('net', ['session']).status === 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+const isAdmin = isElevated();
+logError(`Application started. Admin Mode: ${isAdmin}`);
+
+// Auto-relaunch as admin if not elevated
+if (process.platform === 'win32' && !isAdmin && !process.argv.includes('--no-admin')) {
+  const { spawn } = require('child_process');
+  const exePath = app.getPath('exe');
+  const args = process.argv.slice(1);
+  
+  // Use PowerShell to start the process with 'runAs' verb (Admin)
+  const psCommand = `Start-Process -FilePath "${exePath}" -ArgumentList "${args.join(' ')}" -Verb RunAs`;
+  
+  spawn('powershell.exe', ['-Command', psCommand], {
+    detached: true,
+    stdio: 'ignore'
+  }).unref();
+  
+  app.quit();
+  process.exit(0);
 }
 
 const store = new Store({
@@ -29,13 +80,6 @@ const store = new Store({
   }
 });
 
-let mainWindow;
-let tray = null;
-let serialPort = null;
-let reconnectTimer = null;
-let autoLauncher = null;
-let currentStatus = { connected: false, message: 'Đang khởi động...' };
-
 function broadcastStatus(status) {
   currentStatus = { ...currentStatus, ...status };
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -45,17 +89,18 @@ function broadcastStatus(status) {
 
 function setupAutoLaunch() {
   const enabled = store.get('startWithWindows');
-  app.setLoginItemSettings({
-    openAtLogin: enabled,
-    path: app.getPath('exe'),
-    args: [
-      '--hidden'
-    ]
-  });
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: enabled,
+      path: app.getPath('exe'),
+      args: ['--hidden']
+    });
+  } catch (e) {
+    logError('Error setting login item: ' + e.message);
+  }
 }
 
 function parseCCCDData(rawString) {
-  // Giữ nguyên chuỗi gốc (raw) có chứa dấu | theo đúng yêu cầu người dùng
   return rawString.trim();
 }
 
@@ -104,28 +149,28 @@ function connectSerialPort(config) {
 
     function processBuffer() {
       if (!buffer) return;
-      const remaining = decoder.end();
-      if (remaining) buffer += remaining;
-
       const completeData = buffer.trim();
-      buffer = ''; // Reset buffer sau khi xử lý
-      decoder = new StringDecoder(config.encoding === 'ascii' ? 'ascii' : 'utf8'); // Khởi tạo lại decoder cho lần quét tiếp theo
+      buffer = '';
+      decoder = new StringDecoder(config.encoding === 'ascii' ? 'ascii' : 'utf8');
 
       if (completeData) {
+        logError(`Scanned data: ${completeData}`);
         const formatted = parseCCCDData(completeData);
         clipboard.writeText(formatted);
         
-        // Tự động gõ phím dán (Ctrl + V) vào ứng dụng đang focus kèm phím Enter
-        try {
-          const robot = require('robotjs');
-          // Tăng delay sau khi ghi clipboard lên 150ms để Windows và các phần mềm nặng kịp đồng bộ dữ liệu trong bộ nhớ
+        if (robot) {
           setTimeout(() => {
-            robot.keyTap('v', ['control']);
-            // Tăng delay trước khi gõ Enter lên 250ms để phần mềm đích có đủ thời gian xử lý và hiển thị trọn vẹn chuỗi Unicode tiếng Việt
-            setTimeout(() => { robot.keyTap('enter'); }, 250);
+            try {
+              robot.keyTap('v', ['control']);
+              setTimeout(() => { 
+                robot.keyTap('enter');
+              }, 250);
+            } catch (err) {
+              logError('Robotjs execution error: ' + err.message);
+            }
           }, 150);
-        } catch (e) {
-          logError('Robotjs error: ' + e.message);
+        } else {
+          logError('Robotjs not available, skipping auto-paste.');
         }
 
         if (mainWindow && !mainWindow.isDestroyed()) {
@@ -135,19 +180,15 @@ function connectSerialPort(config) {
     }
 
     serialPort.on('data', (data) => {
-      // Sử dụng StringDecoder để giải mã chính xác các ký tự UTF-8 nhiều byte bị cắt ngang giữa các chunk
       const text = decoder.write(data);
       buffer += text;
       
-      // Xóa timer cũ nếu dữ liệu đang tiếp tục đến
       if (scanTimeout) clearTimeout(scanTimeout);
 
-      // Nếu phát hiện ký tự xuống dòng, xử lý ngay
       if (buffer.includes('\n') || buffer.includes('\r')) {
         processBuffer();
       } else {
-        // Giảm thời gian chờ ngắt gói dữ liệu từ 200ms xuống 40ms (tăng tốc độ phản hồi lên gấp 5 lần)
-        scanTimeout = setTimeout(processBuffer, 40);
+        scanTimeout = setTimeout(processBuffer, 50);
       }
     });
 
@@ -181,23 +222,18 @@ function startReconnectLoop() {
         return;
       }
 
-      broadcastStatus({ connected: false, message: `Đang tìm cổng ${config.port || 'COM'}...` });
       try {
         const ports = await SerialPort.list();
-        // Ưu tiên tìm theo cổng COM đã lưu
         let found = ports.find(p => p.path === config.port);
         
-        // Cấp 2: Tìm theo ID phần cứng cực kỳ chính xác (Vendor ID & Product ID)
         if (!found && config.vendorId && config.productId) {
           found = ports.find(p => p.vendorId === config.vendorId && p.productId === config.productId);
         }
 
-        // Cấp 3: Nếu không thấy cổng COM cũ nhưng có lưu tên thiết bị, thử tìm theo tên
         if (!found && config.deviceName) {
           found = ports.find(p => p.friendlyName && p.friendlyName.includes(config.deviceName));
         }
 
-        // Nếu tìm thấy bằng mọi cách ở trên -> Update và nối
         if (found) {
           if (found.path !== config.port) {
             config.port = found.path;
@@ -218,7 +254,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 480,
     height: 175,
-    show: !isHiddenStartup, // Chỉ hiện hộp thoại nếu KHÔNG phải do Windows tự bật
+    show: !isHiddenStartup,
     resizable: false,
     frame: false,
     transparent: true,
@@ -234,16 +270,26 @@ function createWindow() {
 
   mainWindow.webContents.on('did-finish-load', () => {
     broadcastStatus(currentStatus);
+    // Notify if not admin
+    if (!isAdmin) {
+      mainWindow.webContents.executeJavaScript(`
+        const statusMsg = document.getElementById('status-msg');
+        if (statusMsg) {
+          statusMsg.title = 'Phần mềm đang chạy ở quyền người dùng thường. Một số phần mềm đích có thể yêu cầu quyền Administrator để tự động dán dữ liệu.';
+        }
+      `);
+    }
   });
 }
 
 function createTray() {
   const iconPath = path.join(__dirname, 'assets', 'icon.png');
   tray = new Tray(iconPath);
-  tray.setToolTip('CCCD Scanner');
+  tray.setToolTip('CCCD Scanner' + (isAdmin ? ' (Administrator)' : ''));
 
   const contextMenu = Menu.buildFromTemplate([
     { label: 'Mở bảng điều khiển', click: () => mainWindow.show() },
+    { label: isAdmin ? 'Đang chạy quyền Admin ✓' : 'Khuyên dùng: Chạy quyền Admin', enabled: false },
     { type: 'separator' },
     { label: 'Thoát', click: () => { app.isQuiting = true; app.quit(); } }
   ]);
@@ -257,14 +303,25 @@ function createTray() {
 const gotTheLock = app.requestSingleInstanceLock();
 
 if (!gotTheLock) {
+  // If we couldn't get the lock, it means another instance is already running.
+  // If this instance is Admin, we should tell the user to close the other one.
+  logError('Another instance is already running. Exiting...');
   app.quit();
 } else {
   app.on('second-instance', (event, commandLine, workingDirectory) => {
-    // Có người cố gắng mở app lần thứ 2, thay vì mở mới thì ta hiện cái cũ lên
     if (mainWindow) {
       if (!mainWindow.isVisible()) mainWindow.show();
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
+      
+      // If the second instance tried to run as admin, notify the first instance
+      if (commandLine.includes('--admin-attempt')) {
+        dialog.showMessageBox(mainWindow, {
+          type: 'info',
+          title: 'Thông báo',
+          message: 'Bạn đang cố gắng chạy phần mềm với quyền Administrator, nhưng một phiên bản khác đang chạy ngầm. Vui lòng thoát hẳn phần mềm ở khay hệ thống (Tray Icon) trước khi chạy lại với quyền Administrator.'
+        });
+      }
     }
   });
 
@@ -273,30 +330,29 @@ if (!gotTheLock) {
     createWindow();
     createTray();
 
-    // Khởi động kết nối ban đầu
     const config = store.store;
-    const ports = await SerialPort.list();
-    let found = ports.find(p => p.path === config.port);
-    
-    // Cấp 2: Tìm theo phần cứng
-    if (!found && config.vendorId && config.productId) {
-      found = ports.find(p => p.vendorId === config.vendorId && p.productId === config.productId);
-    }
-
-    // Cấp 3: Tìm theo tên thiết bị nếu đổi cổng
-    if (!found && config.deviceName) {
-      found = ports.find(p => p.friendlyName && p.friendlyName.includes(config.deviceName));
-    }
-
-    if (found) {
-      if (found.path !== config.port) {
-        config.port = found.path;
-        store.set('port', found.path);
+    try {
+      const ports = await SerialPort.list();
+      let found = ports.find(p => p.path === config.port);
+      if (!found && config.vendorId && config.productId) {
+        found = ports.find(p => p.vendorId === config.vendorId && p.productId === config.productId);
       }
-      connectSerialPort(config);
-    } else {
-      broadcastStatus({ connected: false, message: `Không tìm thấy cổng ${config.port || '(Chưa chọn)'}` });
-      startReconnectLoop();
+      if (!found && config.deviceName) {
+        found = ports.find(p => p.friendlyName && p.friendlyName.includes(config.deviceName));
+      }
+
+      if (found) {
+        if (found.path !== config.port) {
+          config.port = found.path;
+          store.set('port', found.path);
+        }
+        connectSerialPort(config);
+      } else {
+        broadcastStatus({ connected: false, message: `Không tìm thấy cổng ${config.port || '(Chưa chọn)'}` });
+        startReconnectLoop();
+      }
+    } catch (e) {
+      logError('Startup port listing error: ' + e.message);
     }
 
     app.on('activate', () => {
@@ -304,13 +360,6 @@ if (!gotTheLock) {
     });
   });
 }
-
-// Chế độ ẩn xuống khay hệ thống khi đóng
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    // Không quit, để chạy ngầm
-  }
-});
 
 // IPC Handlers
 ipcMain.handle('list-ports', async () => {

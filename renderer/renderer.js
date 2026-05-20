@@ -88,8 +88,10 @@ window.api.onStatusUpdate((status) => {
   statusMsg.textContent = status.message;
   if (status.connected) {
     statusDot.classList.add('connected');
+    statusDot.classList.remove('disconnected');
   } else {
     statusDot.classList.remove('connected');
+    statusDot.classList.add('disconnected');
   }
 });
 
